@@ -9,7 +9,7 @@ define Profile/Default
 endef
 
 define Profile/Default/Description
-	Default package set compatible with most MPC85xx boards.
+	Default package set compatible with mikrotik rb1100ahx2.
 endef
 
 $(eval $(call Profile,Default))

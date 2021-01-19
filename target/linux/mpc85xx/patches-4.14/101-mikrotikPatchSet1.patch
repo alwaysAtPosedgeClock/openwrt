@@ -1,0 +1,1156 @@
+diff -puNrb linux-4.14.212/arch/powerpc/include/asm/mtvic.h linux-4.14.212b/arch/powerpc/include/asm/mtvic.h
+--- linux-4.14.212/arch/powerpc/include/asm/mtvic.h	1970-01-01 00:00:00.000000000 +0000
++++ linux-4.14.212b/arch/powerpc/include/asm/mtvic.h	2021-01-13 01:26:46.138258011 +0000
+@@ -0,0 +1,8 @@
++#ifndef _ASM_POWERPC_MTVIC_H
++#define _ASM_POWERPC_MTVIC_H
++
++void __init mtvic_init(int def);
++unsigned mtvic_get_irq(void);
++unsigned rb_get_irq(void);
++
++#endif
+diff -puNrb linux-4.14.212/arch/powerpc/include/asm/rb_aux.h linux-4.14.212b/arch/powerpc/include/asm/rb_aux.h
+--- linux-4.14.212/arch/powerpc/include/asm/rb_aux.h	1970-01-01 00:00:00.000000000 +0000
++++ linux-4.14.212b/arch/powerpc/include/asm/rb_aux.h	2021-01-13 01:26:46.138258011 +0000
+@@ -0,0 +1,18 @@
++#ifndef _ASM_POWERPC_RB_AUX_H
++#define _ASM_POWERPC_RB_AUX_H
++
++#include <linux/seq_file.h>
++#include <linux/init.h>
++
++extern void __init rb_pic_init(void);
++extern void __init rb_init_pci(void);
++extern void rb_show_cpuinfo(struct seq_file *);
++extern void rb_restart(char *cmd);
++extern void rb_idle(void);
++extern void change_latch(unsigned char set, unsigned char clear);
++extern unsigned get_gpio_def(const char *name);
++
++void add_second_serial_of_node(void);
++void add_crypto_of_node(unsigned irq);
++
++#endif
+diff -puNrb linux-4.14.212/arch/powerpc/include/asm/vm.h linux-4.14.212b/arch/powerpc/include/asm/vm.h
+--- linux-4.14.212/arch/powerpc/include/asm/vm.h	1970-01-01 00:00:00.000000000 +0000
++++ linux-4.14.212b/arch/powerpc/include/asm/vm.h	2021-01-13 01:26:46.138258011 +0000
+@@ -0,0 +1,35 @@
++#ifndef MT_VM_H
++#define MT_VM_H
++
++#define hypercall(name, nr, ...)		\
++	asm(					\
++		".global " #name ";"		\
++		".align 2;"			\
++		".type " #name ",@function;"	\
++		#name ":;"			\
++		"li 0, " #nr ";"		\
++		"crset so;"			\
++		"mtspr 1023, 0;"		\
++		"bnslr;"			\
++		"li 3, -22;"			\
++		"blr"				\
++        );					\
++	asmlinkage extern int name(__VA_ARGS__);
++
++/* NOTE: do not allow vdma_descr to span multiple pages, so align it */
++struct vdma_descr {
++	unsigned addr;
++	unsigned size;
++	unsigned next;
++} __attribute__((aligned(16)));
++
++#define DONE		0x80000000
++
++unsigned get_virq_nr(unsigned hwirq);
++int vm_yield(void);
++int vm_running(void);
++
++#define hc_yield() vm_yield()
++
++
++#endif
+diff -puNrb linux-4.14.212/arch/powerpc/Kconfig linux-4.14.212b/arch/powerpc/Kconfig
+--- linux-4.14.212/arch/powerpc/Kconfig	2020-12-11 12:39:07.000000000 +0000
++++ linux-4.14.212b/arch/powerpc/Kconfig	2021-01-13 01:26:46.138258011 +0000
+@@ -498,7 +498,7 @@ config SWIOTLB
+ config HOTPLUG_CPU
+ 	bool "Support for enabling/disabling CPUs"
+ 	depends on SMP && (PPC_PSERIES || \
+-	PPC_PMAC || PPC_POWERNV || FSL_SOC_BOOKE)
++	PPC_PMAC || PPC_POWERNV || FSL_SOC_BOOKE || PPC_85xx)
+ 	---help---
+ 	  Say Y here to be able to disable and re-enable individual
+ 	  CPUs at runtime on SMP machines.
+@@ -960,6 +960,11 @@ config FSL_GTM
+ 	help
+ 	  Freescale General-purpose Timers support
+ 
++config HAS_FSL_QBMAN
++        bool "Datapath Acceleration Queue and Buffer management"
++        help
++          Datapath Acceleration Queue and Buffer management
++
+ # Yes MCA RS/6000s exist but Linux-PPC does not currently support any
+ config MCA
+ 	bool
+diff -puNrb linux-4.14.212/arch/powerpc/kernel/Makefile linux-4.14.212b/arch/powerpc/kernel/Makefile
+--- linux-4.14.212/arch/powerpc/kernel/Makefile	2020-12-11 12:39:07.000000000 +0000
++++ linux-4.14.212b/arch/powerpc/kernel/Makefile	2021-01-13 01:26:46.138258011 +0000
+@@ -122,8 +122,10 @@ obj-$(CONFIG_PPC_IO_WORKAROUNDS)	+= io-w
+ obj-y				+= trace/
+ 
+ ifneq ($(CONFIG_PPC_INDIRECT_PIO),y)
++ifneq ($(CONFIG_RB_IOMAP),y)
+ obj-y				+= iomap.o
+ endif
++endif
+ 
+ obj64-$(CONFIG_PPC_TRANSACTIONAL_MEM)	+= tm.o
+ 
+diff -puNrb linux-4.14.212/arch/powerpc/platforms/85xx/Kconfig linux-4.14.212b/arch/powerpc/platforms/85xx/Kconfig
+--- linux-4.14.212/arch/powerpc/platforms/85xx/Kconfig	2020-12-11 12:39:07.000000000 +0000
++++ linux-4.14.212b/arch/powerpc/platforms/85xx/Kconfig	2021-01-13 01:26:46.138258011 +0000
+@@ -95,6 +95,24 @@ config MPC85xx_DS
+ 	help
+ 	  This option enables support for the MPC85xx DS (MPC8544 DS) board
+ 
++config RB800
++	bool "Mikrotik RB800"
++	select MT_VIC
++	select RB_AUX
++	select RB_PCI
++	select RB_IOMAP
++	help
++	  This option enables support for the Mikrotik RB800 board
++
++config RB1120
++	bool "Mikrotik RB1120"
++	select MT_VIC
++	select RB_AUX
++	select RB_PCI
++	select RB_IOMAP
++	help
++	  This option enables support for the Mikrotik RB1100AHx2 board
++	
+ config MPC85xx_RDB
+ 	bool "Freescale MPC85xx RDB"
+ 	select PPC_I8259
+diff -puNrb linux-4.14.212/arch/powerpc/platforms/85xx/Makefile linux-4.14.212b/arch/powerpc/platforms/85xx/Makefile
+--- linux-4.14.212/arch/powerpc/platforms/85xx/Makefile	2020-12-11 12:39:07.000000000 +0000
++++ linux-4.14.212b/arch/powerpc/platforms/85xx/Makefile	2021-01-13 01:26:46.138258011 +0000
+@@ -16,6 +16,8 @@ obj-$(CONFIG_MPC85xx_CDS) += mpc85xx_cds
+ obj-$(CONFIG_MPC8536_DS)  += mpc8536_ds.o
+ obj-$(CONFIG_MPC85xx_DS)  += mpc85xx_ds.o
+ obj-$(CONFIG_MPC85xx_MDS) += mpc85xx_mds.o
++obj-$(CONFIG_RB800)	  += rb800.o
++obj-$(CONFIG_RB1120)	  += rb1120.o
+ obj-$(CONFIG_MPC85xx_RDB) += mpc85xx_rdb.o
+ obj-$(CONFIG_P1010_RDB)   += p1010rdb.o
+ obj-$(CONFIG_P1022_DS)    += p1022_ds.o
+diff -puNrb linux-4.14.212/arch/powerpc/platforms/85xx/rb1120.c linux-4.14.212b/arch/powerpc/platforms/85xx/rb1120.c
+--- linux-4.14.212/arch/powerpc/platforms/85xx/rb1120.c	1970-01-01 00:00:00.000000000 +0000
++++ linux-4.14.212b/arch/powerpc/platforms/85xx/rb1120.c	2021-01-13 01:26:46.138258011 +0000
+@@ -0,0 +1,129 @@
++#include <linux/spinlock.h>
++#include <linux/memblock.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/of_irq.h>
++#include <linux/of_device.h>
++#include <linux/of_dma.h>
++#include <linux/of_fdt.h>
++#include <linux/of_gpio.h>
++#include <linux/of_graph.h>
++#include <linux/of_iommu.h>
++#include <linux/of_irq.h>
++#include <linux/of_mdio.h>
++#include <linux/of_net.h>
++#include <linux/of_pci.h>
++#include <linux/of_pdt.h>
++#include <linux/of_platform.h>
++#include <linux/of_reserved_mem.h>
++#include <asm/time.h>
++#include <asm/machdep.h>
++#include <asm/mpic.h>
++#include <asm/mtvic.h>
++#include <sysdev/fsl_pci.h>
++#include <asm/rb_aux.h>
++
++#ifdef CONFIG_SMP
++extern void __init mpc85xx_smp_init(void);
++#endif
++
++spinlock_t localbus_lock = __SPIN_LOCK_UNLOCKED(localbus_lock);
++EXPORT_SYMBOL(localbus_lock);
++
++static void __init rb1120_setup_arch(void)
++{
++	mtspr(SPRN_HID0, 1 << 14); /* set TBEN */
++	mb();
++
++	ppc_md.power_save = rb_idle;
++
++#ifdef CONFIG_PCI
++	rb_init_pci();
++#endif
++
++#ifdef CONFIG_SMP
++	mpc85xx_smp_init();
++#endif
++}
++
++static int is_board(const char *str) {
++	const char *model;
++	model = of_get_flat_dt_prop(of_get_flat_dt_root(), "model", NULL);
++	return model ? (strcmp(model, str) == 0) : 0;    
++}
++
++#ifdef CONFIG_FSL_QMAN_CONFIG
++void qman_init_early(void);
++#endif
++#ifdef CONFIG_FSL_BMAN_CONFIG
++void bman_init_early(void);
++#endif
++static void __init rb1120_init_early(void) {
++	if (!is_board("RB850G")) {
++		add_second_serial_of_node();
++	}
++#ifdef CONFIG_FSL_QMAN_CONFIG
++	qman_init_early();
++#endif
++#ifdef CONFIG_FSL_BMAN_CONFIG
++	bman_init_early();
++#endif
++}
++
++static int __init rb1120_probe(void)
++{
++	int is_rb_p_type = is_board("RB1120");
++	if (is_board("RB850G")) is_rb_p_type = true;
++
++	if (is_rb_p_type) {
++	    unsigned top = memblock_end_of_DRAM();
++	    memblock_add(top, 0x1000);
++	    memblock_reserve(top, 0x1000);
++	}
++
++	rb1120_init_early();
++	return is_rb_p_type;
++}
++
++static void __noreturn rb_power_off(void)
++{
++	for (;;);
++}
++
++static void __noreturn rb1120_restart(char *cmd)
++{
++	static phys_addr_t immrbase = -1;
++	struct device_node *soc = of_find_node_by_type(NULL, "soc");
++	unsigned *addr;
++	int size;
++    
++	if (soc) {
++	    const void *prop = of_get_property(soc, "reg", &size);
++	    immrbase = of_translate_address(soc, prop);
++	    of_node_put(soc);
++
++	    addr = (unsigned *) ioremap_nocache(immrbase + 0xe0000, 0x100);
++	    local_irq_disable();
++	    out_be32(addr + 44, 2); 
++	    iounmap(addr);
++	}
++	else {
++	    printk("This is emergency!\n");
++	    local_irq_disable();
++	    rb_restart(NULL);
++	}
++	for (;;);
++}
++
++define_machine(rb1120) {
++	.name			= "RB1120",
++	.probe			= rb1120_probe,
++	.setup_arch		= rb1120_setup_arch,
++	.init_IRQ		= rb_pic_init,
++	.get_irq		= rb_get_irq,
++	.show_cpuinfo		= rb_show_cpuinfo,
++	.restart		= rb1120_restart,
++	.calibrate_decr		= generic_calibrate_decr,
++	.pcibios_fixup_bus	= fsl_pcibios_fixup_bus,
++	.halt			= rb_power_off,
++};
+diff -puNrb linux-4.14.212/arch/powerpc/platforms/85xx/rb800.c linux-4.14.212b/arch/powerpc/platforms/85xx/rb800.c
+--- linux-4.14.212/arch/powerpc/platforms/85xx/rb800.c	1970-01-01 00:00:00.000000000 +0000
++++ linux-4.14.212b/arch/powerpc/platforms/85xx/rb800.c	2021-01-13 01:26:46.138258011 +0000
+@@ -0,0 +1,54 @@
++#include <linux/of_platform.h>
++#include <asm/time.h>
++#include <asm/machdep.h>
++#include <asm/mpic.h>
++#include <asm/mtvic.h>
++#include <sysdev/fsl_pci.h>
++#include <asm/rb_aux.h>
++
++static void __init rb800_setup_arch(void)
++{
++	mtspr(SPRN_HID0, 1 << 14); /* set TBEN */
++	mb();
++
++	if ((mfspr(SPRN_SVR) >> 16) == 0x803c)
++		add_crypto_of_node(0x2d);
++
++	ppc_md.power_save = rb_idle;
++
++#ifdef CONFIG_PCI
++	rb_init_pci();
++#endif
++}
++
++static int __init rb800_probe(void)
++{
++	char *model;
++
++	model = of_get_flat_dt_prop(of_get_flat_dt_root(), "model", NULL);
++
++	if (!model)
++		return 0;
++
++	return strcmp(model, "RB800") == 0;
++}
++
++void rb_power_off(void);
++
++static void __init rb800_init_early(void) {
++	add_second_serial_of_node();
++}
++
++define_machine(rb800) {
++	.name			= "RB800",
++	.probe			= rb800_probe,
++	.setup_arch		= rb800_setup_arch,
++	.init_early		= rb800_init_early,
++	.init_IRQ		= rb_pic_init,
++	.get_irq		= rb_get_irq,
++	.show_cpuinfo		= rb_show_cpuinfo,
++	.restart		= rb_restart,
++	.calibrate_decr		= generic_calibrate_decr,
++	.pcibios_fixup_bus	= fsl_pcibios_fixup_bus,
++	.power_off		= rb_power_off,
++};
+diff -puNrb linux-4.14.212/arch/powerpc/platforms/Kconfig linux-4.14.212b/arch/powerpc/platforms/Kconfig
+--- linux-4.14.212/arch/powerpc/platforms/Kconfig	2020-12-11 12:39:07.000000000 +0000
++++ linux-4.14.212b/arch/powerpc/platforms/Kconfig	2021-01-13 01:26:46.138258011 +0000
+@@ -122,6 +122,15 @@ config MPIC_WEIRD
+ 	bool
+ 	default n
+ 
++config MT_VIC
++	bool
++
++config RB_AUX
++	bool
++
++config RB_PCI
++	bool
++
+ config MPIC_MSGR
+ 	bool "MPIC message register support"
+ 	depends on MPIC
+@@ -207,6 +216,9 @@ config PPC_INDIRECT_MMIO
+ config PPC_IO_WORKAROUNDS
+ 	bool
+ 
++config RB_IOMAP
++	bool
++
+ source "drivers/cpufreq/Kconfig"
+ 
+ menu "CPUIdle driver"
+diff -puNrb linux-4.14.212/arch/powerpc/sysdev/Makefile linux-4.14.212b/arch/powerpc/sysdev/Makefile
+--- linux-4.14.212/arch/powerpc/sysdev/Makefile	2020-12-11 12:39:07.000000000 +0000
++++ linux-4.14.212b/arch/powerpc/sysdev/Makefile	2021-01-13 01:26:46.138258011 +0000
+@@ -7,6 +7,7 @@ mpic-msi-obj-$(CONFIG_PCI_MSI)	+= mpic_m
+ obj-$(CONFIG_MPIC)		+= mpic.o $(mpic-msi-obj-y)
+ obj-$(CONFIG_MPIC_TIMER)        += mpic_timer.o
+ obj-$(CONFIG_FSL_MPIC_TIMER_WAKEUP)	+= fsl_mpic_timer_wakeup.o
++obj-$(CONFIG_MT_VIC)		+= mtvic.o
+ mpic-msgr-obj-$(CONFIG_MPIC_MSGR)	+= mpic_msgr.o
+ obj-$(CONFIG_MPIC)		+= mpic.o $(mpic-msi-obj-y) $(mpic-msgr-obj-y)
+ obj-$(CONFIG_PPC_EPAPR_HV_PIC)	+= ehv_pic.o
+@@ -48,6 +49,10 @@ obj-$(CONFIG_QUICC_ENGINE)	+= cpm_common
+ obj-$(CONFIG_PPC_DCR)		+= dcr.o
+ obj-$(CONFIG_UCODE_PATCH)	+= micropatch.o
+ 
++obj-$(CONFIG_RB_IOMAP)		+= rb_iomap.o
++obj-$(CONFIG_RB_AUX)		+= rb_aux.o
++obj-$(CONFIG_RB_PCI)		+= rb_pci.o
++
+ obj-$(CONFIG_PPC_MPC512x)	+= mpc5xxx_clocks.o
+ obj-$(CONFIG_PPC_MPC52xx)	+= mpc5xxx_clocks.o
+ 
+diff -puNrb linux-4.14.212/arch/powerpc/sysdev/mtvic.c linux-4.14.212b/arch/powerpc/sysdev/mtvic.c
+--- linux-4.14.212/arch/powerpc/sysdev/mtvic.c	1970-01-01 00:00:00.000000000 +0000
++++ linux-4.14.212b/arch/powerpc/sysdev/mtvic.c	2021-01-13 01:26:46.138258011 +0000
+@@ -0,0 +1,72 @@
++#include <linux/module.h>
++#include <linux/irq.h>
++#include <asm/mpic.h>
++#include <asm/mtvic.h>
++
++struct irq_domain *virq_host;
++EXPORT_SYMBOL(virq_host);
++
++unsigned get_virq_nr(unsigned hwirq)
++{
++	return irq_create_mapping(virq_host, hwirq);
++}
++EXPORT_SYMBOL(get_virq_nr);
++
++void mtvic_mask_irq(struct irq_data *d)
++{
++}
++
++void mtvic_unmask_irq(struct irq_data *d)
++{
++}
++
++static struct irq_chip softirq_chip = {
++	.irq_mask	= mtvic_mask_irq,
++	.irq_unmask	= mtvic_unmask_irq,
++};
++
++static int mtvic_map(struct irq_domain *h, unsigned int virq, irq_hw_number_t hw)
++{
++	irq_set_chip_and_handler(virq, &softirq_chip, handle_simple_irq);
++	return 0;
++}
++
++static struct irq_domain_ops mtvic_ops = {
++	.map = mtvic_map,
++};
++
++void __init mtvic_init(int def)
++{
++	static unsigned virqs;
++
++	virq_host = irq_domain_add_linear(NULL, 32, &mtvic_ops, NULL);
++	virq_host->host_data = &virqs;
++
++	if (def)
++		irq_set_default_host(virq_host);
++}
++
++unsigned mtvic_get_irq(void)
++{
++	static unsigned i = 0;
++	unsigned *irqs = virq_host->host_data;
++
++	if (!irqs)
++		return NO_IRQ;
++
++	for (i = (i + 1) & 31; *irqs; i = (i + 1) & 31) {
++		if (*irqs & (1 << i)) {
++			atomic_sub(1 << i, (atomic_t *) irqs);
++			return irq_linear_revmap(virq_host, i);
++		}
++	}
++	return NO_IRQ;
++}
++
++unsigned rb_get_irq(void)
++{
++	unsigned irq = mtvic_get_irq();
++	if (irq != NO_IRQ) return irq;
++
++	return mpic_get_irq();
++}
+diff -puNrb linux-4.14.212/arch/powerpc/sysdev/rb_aux.c linux-4.14.212b/arch/powerpc/sysdev/rb_aux.c
+--- linux-4.14.212/arch/powerpc/sysdev/rb_aux.c	1970-01-01 00:00:00.000000000 +0000
++++ linux-4.14.212b/arch/powerpc/sysdev/rb_aux.c	2021-01-13 01:26:46.138258011 +0000
+@@ -0,0 +1,401 @@
++#include <linux/module.h>
++#include <linux/io.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/of_irq.h>
++#include <linux/interrupt.h>
++#include <linux/seq_file.h>
++#include <linux/of_platform.h>
++#include <linux/of_gpio.h>
++#include <linux/gpio.h>
++#include <mm/mmu_decl.h>
++#include <asm/machdep.h>
++#include <asm/mpic.h>
++#include <asm/mtvic.h>
++#include <asm/vm.h>
++#include <asm/rb_aux.h>
++#define GPIO(x) (0x80000000 >> (x))
++static unsigned *gpio_data = NULL;
++static unsigned *picr = NULL;
++
++const unsigned *beep1;
++const unsigned *beep2;
++
++#define GT0_BASE_COUNT (picr + (0x1110 / 4))
++
++hypercall(hv_yield, 16, void);
++
++static void ioremap_from_node(const unsigned *property, unsigned **ptr) {
++    struct resource res;
++    struct device_node *nd;
++    
++    nd = of_find_node_by_phandle(property[0]);
++    if (!nd || of_address_to_resource(nd, 0, &res)) return;
++    of_node_put(nd);
++
++    *ptr = ioremap_nocache(res.start, res.end - res.start + 1);
++}
++
++irqreturn_t beeper_irq(int irq, void *ptr)
++{
++	static int toggle = 1;
++	if (toggle) {
++	    out_be32(gpio_data, in_be32(gpio_data) & ~GPIO(beep1[0]));
++	    if (beep2) {
++		out_be32(gpio_data, in_be32(gpio_data) & ~GPIO(beep2[0]));
++	    }
++	}
++	else {
++	    out_be32(gpio_data, in_be32(gpio_data) | GPIO(beep1[0]));
++	    if (beep2) {
++		out_be32(gpio_data, in_be32(gpio_data) | GPIO(beep2[0]));
++	    }
++	}
++	toggle ^= 1; 
++	return IRQ_HANDLED;
++}
++
++void consume(int x) { }
++
++extern unsigned long ppc_tb_freq;
++static unsigned long ppc_tb_freq_kHz;
++
++static void adjust_gpio_data_register(void) {
++    unsigned pvr = mfspr(SPRN_PVR) & ~0xff;
++    printk("pvr = %08x\n", pvr);
++    if (pvr != 0x80210000) {
++	/* aim pointer at GPIO data register */
++	gpio_data = gpio_data + 2;
++    }
++}
++
++static void __init rb_beeper_init(void)
++{
++	struct device_node *beeper;
++	unsigned interrupt;
++	const unsigned *int_p;
++	const unsigned *gpio;
++	
++	beeper = of_find_node_by_name(NULL, "beeper");
++	if (!beeper)
++		return;
++
++	beep1 = of_get_property(beeper, "beep1", NULL);
++	beep2 = of_get_property(beeper, "beep2", NULL);
++	gpio  = of_get_property(beeper, "gpio", NULL);
++	int_p = of_get_property(beeper, "interrupt-parent", NULL);
++	
++	ioremap_from_node(gpio, &gpio_data);
++	ioremap_from_node(int_p, &picr);
++	
++	ppc_tb_freq_kHz = (ppc_tb_freq / 1000);
++	
++	if (gpio_data) {
++	    adjust_gpio_data_register();
++
++	    interrupt = irq_of_parse_and_map(beeper, 0);
++	    if (interrupt != NO_IRQ)
++		consume(request_irq(interrupt, beeper_irq, 
++				    IRQF_TRIGGER_RISING,
++				    "beeper", NULL));
++	}
++}
++
++void router_beep(unsigned freq) {
++	if (!ppc_tb_freq_kHz)
++		return;
++
++	out_be32(GT0_BASE_COUNT,
++		 freq ? (500 * ppc_tb_freq_kHz) / freq : 0x80000000);
++}
++EXPORT_SYMBOL(router_beep);
++
++static struct resource rb_led_resources[2] = {
++	[0] = {
++		.flags		= IORESOURCE_IO,
++	},
++	[1] = {
++		.name		= "user-led",
++	},
++};
++
++static const unsigned rb_uled[2] = { 0x400, 0x1c };
++
++static int __init rb_leds_init(void)
++{
++	struct device_node *np;
++	const unsigned *uled = rb_uled;
++
++	np = of_find_node_by_name(NULL, "led");
++	if (np) {
++		uled = of_get_property(np, "user_led", NULL);
++		of_node_put(np);
++		if (!uled) {
++			printk("rbppc led error: "
++			       "user_led property is missing\n");
++			return -1;
++		}
++	}
++
++	rb_led_resources[1].start = uled[1];
++	rb_led_resources[1].end = uled[1];
++
++	np = of_find_node_by_phandle(uled[0]);
++	if (!np) {
++		printk("rbppc led error: no gpio<%x> node found\n", *uled);
++		return -1;
++	}
++	if (of_address_to_resource(np, 0, &rb_led_resources[0])) {
++		of_node_put(np);
++		printk("rbppc led error: no reg property in gpio found\n");
++		return -1;
++	}
++	of_node_put(np);
++
++	platform_device_register_simple("rbppc-led", 0,
++					rb_led_resources, 2);
++	return 0;
++}
++
++static struct of_device_id __initdata of_bus_ids[] = {
++	{ .type = "soc", },
++	{ .compatible = "soc", },
++	{ .compatible = "fsl,dpaa", },
++	{ .compatible = "simple-bus", },
++	{},
++};
++
++static int __init rb_declare_of_platform_devices(void)
++{
++	struct device_node *np;
++	unsigned idx;
++
++	np = of_find_node_by_name(NULL, "nand");
++	if (np) of_platform_device_create(np, "nand", NULL);
++
++	np = of_find_node_by_name(NULL, "nand_fcm");
++	if (np) of_platform_device_create(np, "nand_fcm", NULL);
++
++	np = of_find_node_by_name(NULL, "spi");
++	if (np) of_platform_device_create(np, "spi", NULL);
++
++	idx = 0;
++	for_each_node_by_type(np, "rb,cf") {
++		char dev_name[12];
++		snprintf(dev_name, sizeof(dev_name), "cf.%u", idx);
++		of_platform_device_create(np, dev_name, NULL);
++		++idx;		
++	}
++
++	rb_beeper_init();
++	rb_leds_init();
++
++	of_platform_bus_probe(NULL, of_bus_ids, NULL);
++
++	return 0;
++}
++
++device_initcall(rb_declare_of_platform_devices);
++
++void __init rb_pic_init(void)
++{
++	struct device_node *np;
++	struct resource r;
++	struct mpic *mpic;
++	void *gcr;
++	unsigned i;
++
++	mtvic_init(0);
++
++	np = of_find_node_by_type(NULL, "open-pic");
++
++	if (!np)
++		return;
++
++	if (of_address_to_resource(np, 0, &r)) {
++		printk(KERN_ERR "mpic error: no region specified\n");
++		of_node_put(np);
++		return;
++	}
++
++	gcr = ioremap(r.start + 0x1020, 4);
++	out_be32(gcr, in_be32(gcr) | (1 << 29));
++	iounmap(gcr);
++
++	mpic = mpic_alloc(np, r.start, MPIC_BIG_ENDIAN,
++			  4, 0, " OpenPIC ");
++	for (i = 0; i < 80; i += 4) {
++		/* 
++		 * each mpic_assign_isu call assigns 4 isus at once
++		 * (as it is specified in mpic_alloc call 4th argument)
++		 * therefore base address must be incremented by 0x80
++		 */
++		mpic_assign_isu(mpic, i / 4, r.start + 0x10000 + i * 0x20);
++	}
++	mpic_assign_isu(mpic, 80 / 4, r.start + 0x1120);
++
++	of_node_put(np);
++	mpic_init(mpic);
++}
++
++void rb_show_cpuinfo(struct seq_file *m)
++{
++	seq_printf(m, "Vendor\t\t: Mikrotik\n");
++	seq_printf(m, "Machine\t\t: %s\n", ppc_md.name);
++	seq_printf(m, "Memory\t\t: %u MB\n", total_memory / (1024 * 1024));
++}
++
++void rb_restart(char *cmd)
++{
++	local_irq_disable();
++
++	mtmsr(mfmsr() | 0x00000200);
++	mtspr(0x134, mfspr(0x134) | 0x70000000);
++}
++
++void rb_power_off(void)
++{
++	printk(KERN_EMERG "System Halted, OK to turn off power\n");
++	while (1) ;
++}
++
++void rb_idle(void) {
++	extern void e500_idle(void);
++	int err;
++
++	local_irq_enable();
++	err = hv_yield();
++	local_irq_disable();
++	if (err < 0) e500_idle();
++}
++
++struct of_prop {
++    const char *name;
++    unsigned size;
++    unsigned values[2];
++    struct property prop;
++};
++
++void add_of_property(struct device_node *np, struct property *pp,
++		     const char *name, unsigned size, void *value)
++{
++	memset(pp, 0, sizeof(struct property));
++	pp->name = (char *) name;
++	pp->length = size;
++	pp->value = value;
++
++	of_add_property(np, pp);
++}
++
++struct of_prop serial_properties[] = {
++    { "reg", 8, { 0x4500, 0x100 } },
++    { "interrupts", 8,  { 0x2a, 2 } },
++    { "interrupt-parent", 4, { 0x700 } },
++    { NULL, 0, { 0 } }
++};
++
++/*
++ * The device tree is traversed in some funny order. If we just add second
++ * serial node (0x4600) then it is found as first and onboard serial connector
++ * is found as second which is no good because debug and console will
++ * show up on serial that is attaced to header pins. Therefore we add new node
++ * with offset (0x4500) and replace original node's offset with (0x4600)
++ */
++void add_second_serial_of_node(void)
++{
++	static struct device_node serial_node;
++	static struct property comp_prop;
++	static struct property clock_prop;
++	static unsigned clock = 0;
++
++	struct device_node *np;
++	struct device_node *sp;
++	struct of_prop *p;
++
++	sp = of_find_node_by_type(NULL, "serial");
++	if (!sp) return;
++
++	clock = * (unsigned *) of_get_property(sp, "clock-frequency", NULL);
++
++	np = &serial_node;
++	memset(np, 0, sizeof(struct device_node));
++
++	np->name = "serial-port";
++	np->type = of_get_property(sp, "device_type", NULL);
++
++	add_of_property(np, &comp_prop,  "compatible",      8, "ns16550");
++	add_of_property(np, &clock_prop, "clock-frequency", 4, &clock);
++
++	for (p = serial_properties; p->name; ++p) {
++		add_of_property(np, &p->prop, p->name, p->size, p->values);
++	}
++
++	/* change original node to 0x4600 */
++	np->full_name = sp->full_name;
++	sp->full_name = "/soc8544@e0000000/serial@4600";	
++	* (unsigned *) of_get_property(sp, "reg", NULL) = 0x4600;
++
++	np->parent = sp->parent;
++	of_attach_node(np);
++}
++
++struct of_prop crypto_properties[] = {
++    { "reg", 8, { 0x30000, 0x10000 } },
++    { "interrupts", 8,  { 0x1d, 2 } },
++    { "interrupt-parent", 4, { 0x700 } },
++    { "fsl,num-channels", 4, { 4 } },
++    { "fsl,channel-fifo-len", 4, { 24 } },
++    { "fsl,exec-units-mask", 4, { 0xfe } },
++    { "fsl,descriptor-types-mask", 4, { 0x12b0ebf } },
++    { NULL, 0, { 0 } }
++};
++
++void add_crypto_of_node(unsigned irq)
++{
++	static struct device_node crypto_node;
++	static struct property comp_prop;
++
++	struct device_node *np;
++	struct device_node *sp;
++	struct of_prop *p;
++
++	sp = of_find_node_by_type(NULL, "serial");
++	if (!sp)
++		return;
++
++	np = &crypto_node;
++	memset(np, 0, sizeof(struct device_node));
++	np->full_name = "crypto@30000";
++	
++	add_of_property(np, &comp_prop, "compatible", 11, "fsl,sec2.0");
++
++	for (p = crypto_properties; p->name; ++p) {
++		if (strcmp(p->name, "interrupts") == 0) {
++		    p->values[0] = irq;
++		}
++		add_of_property(np, &p->prop, p->name, p->size, p->values);
++	}
++
++	np->parent = sp->parent;
++	of_attach_node(np);
++}
++
++/* 
++ * this function is copy pasted from rb1200.c
++ * black belt told me to leave it like that for now
++ */
++unsigned get_gpio_def(const char *name) {
++    unsigned pin = 0;
++    struct device_node *np, *child;	
++    np = of_find_node_by_name(NULL, "gpio-definitions");
++    if (!np) return 0;
++    for_each_child_of_node(np, child) {
++	if (strcmp(child->name, name) == 0) {
++	    pin = of_get_gpio(child, 0);
++	}
++    }
++    of_node_put(np);
++    return pin;
++}
++
++EXPORT_SYMBOL(get_gpio_def);
+diff -puNrb linux-4.14.212/arch/powerpc/sysdev/rb_iomap.c linux-4.14.212b/arch/powerpc/sysdev/rb_iomap.c
+--- linux-4.14.212/arch/powerpc/sysdev/rb_iomap.c	1970-01-01 00:00:00.000000000 +0000
++++ linux-4.14.212b/arch/powerpc/sysdev/rb_iomap.c	2021-01-13 01:26:46.138258011 +0000
+@@ -0,0 +1,204 @@
++#include <linux/init.h>
++#include <linux/pci.h>
++#include <linux/mm.h>
++#include <asm/io.h>
++
++#define LOCALBUS_START		0x40000000
++#define LOCALBUS_MASK		0x007fffff
++#define LOCALBUS_REGMASK	0x001fffff
++
++static void __iomem *localbus_base;
++
++static inline int is_localbus(void __iomem *addr)
++{
++	return ((unsigned) addr & ~LOCALBUS_MASK) == LOCALBUS_START;
++}
++
++static inline unsigned localbus_regoff(unsigned reg) {
++	return (reg << 16) | (((reg ^ 8) & 8) << 17);
++}
++
++static inline void __iomem *localbus_addr(void __iomem *addr)
++{
++	return localbus_base
++	    + ((unsigned) addr & LOCALBUS_MASK & ~LOCALBUS_REGMASK)
++	    + localbus_regoff((unsigned) addr & LOCALBUS_REGMASK);
++}
++
++unsigned int ioread8(void __iomem *addr)
++{
++	if (is_localbus(addr))
++		return in_be16(localbus_addr(addr)) >> 8;
++	return readb(addr);
++}
++EXPORT_SYMBOL(ioread8);
++
++unsigned int ioread16(void __iomem *addr)
++{
++	if (is_localbus(addr))
++		return le16_to_cpu(in_be16(localbus_addr(addr)));
++	return readw(addr);
++}
++EXPORT_SYMBOL(ioread16);
++
++unsigned int ioread16be(void __iomem *addr)
++{
++	return in_be16(addr);
++}
++EXPORT_SYMBOL(ioread16be);
++
++unsigned int ioread32(void __iomem *addr)
++{
++	return readl(addr);
++}
++EXPORT_SYMBOL(ioread32);
++
++unsigned int ioread32be(void __iomem *addr)
++{
++	return in_be32(addr);
++}
++EXPORT_SYMBOL(ioread32be);
++
++void iowrite8(u8 val, void __iomem *addr)
++{
++	if (is_localbus(addr))
++		out_be16(localbus_addr(addr), ((u16) val) << 8);
++	else
++		writeb(val, addr);
++}
++EXPORT_SYMBOL(iowrite8);
++
++void iowrite16(u16 val, void __iomem *addr)
++{
++	if (is_localbus(addr))
++		out_be16(localbus_addr(addr), cpu_to_le16(val));
++	else
++		writew(val, addr);
++}
++EXPORT_SYMBOL(iowrite16);
++
++void iowrite16be(u16 val, void __iomem *addr)
++{
++	out_be16(addr, val);
++}
++EXPORT_SYMBOL(iowrite16be);
++
++void iowrite32(u32 val, void __iomem *addr)
++{
++	writel(val, addr);
++}
++EXPORT_SYMBOL(iowrite32);
++
++void iowrite32be(u32 val, void __iomem *addr)
++{
++	out_be32(addr, val);
++}
++EXPORT_SYMBOL(iowrite32be);
++
++void ioread8_rep(void __iomem *addr, void *dst, unsigned long count)
++{
++	if (is_localbus(addr)) {
++		unsigned i;
++		void *laddr = localbus_addr(addr);
++		u8 *buf = dst;
++		
++		for (i = 0; i < count; ++i) {
++			*buf++ = in_be16(laddr) >> 8;
++		}
++	} else {
++		_insb((u8 __iomem *) addr, dst, count);
++	}
++}
++EXPORT_SYMBOL(ioread8_rep);
++
++void ioread16_rep(void __iomem *addr, void *dst, unsigned long count)
++{
++	if (is_localbus(addr)) {
++		unsigned i;
++		void *laddr = localbus_addr(addr);
++		u16 *buf = dst;
++		
++		for (i = 0; i < count; ++i) {
++			*buf++ = in_be16(laddr);
++		}
++	} else {
++		_insw_ns((u16 __iomem *) addr, dst, count);
++	}
++}
++EXPORT_SYMBOL(ioread16_rep);
++
++void ioread32_rep(void __iomem *addr, void *dst, unsigned long count)
++{
++	_insl_ns((u32 __iomem *) addr, dst, count);
++}
++EXPORT_SYMBOL(ioread32_rep);
++
++void iowrite8_rep(void __iomem *addr, const void *src, unsigned long count)
++{
++	if (is_localbus(addr)) {
++		unsigned i;
++		void *laddr = localbus_addr(addr);
++		const u8 *buf = src;
++		
++		for (i = 0; i < count; ++i) {
++			out_be16(laddr, ((u16) *buf++) << 8);
++		}
++	} else {
++		_outsb((u8 __iomem *) addr, src, count);
++	}
++}
++EXPORT_SYMBOL(iowrite8_rep);
++
++void iowrite16_rep(void __iomem *addr, const void *src, unsigned long count)
++{
++	if (is_localbus(addr)) {
++		unsigned i;
++		void *laddr = localbus_addr(addr);
++		const u16 *buf = src;
++		
++		for (i = 0; i < count; ++i) {
++			out_be16(laddr, *buf++);
++		}
++	} else {
++		_outsw_ns((u16 __iomem *) addr, src, count);
++	}
++}
++EXPORT_SYMBOL(iowrite16_rep);
++
++void iowrite32_rep(void __iomem *addr, const void *src, unsigned long count)
++{
++	_outsl_ns((u32 __iomem *) addr, src, count);
++}
++EXPORT_SYMBOL(iowrite32_rep);
++
++void __iomem *ioport_map(unsigned long port, unsigned int len)
++{
++	return (void __iomem *) (port + _IO_BASE);
++}
++EXPORT_SYMBOL(ioport_unmap);
++
++void ioport_unmap(void __iomem *addr)
++{
++	/* Nothing to do */
++}
++EXPORT_SYMBOL(ioport_map);
++
++void pci_iounmap(struct pci_dev *dev, void __iomem *addr)
++{
++	/* Nothing to do */
++}
++EXPORT_SYMBOL(pci_iounmap);
++
++void __iomem *localbus_map(unsigned long addr, unsigned int len)
++{
++	if (!localbus_base)
++		localbus_base = ioremap(addr & ~LOCALBUS_MASK,
++					LOCALBUS_MASK + 1);
++	return (void *) (LOCALBUS_START + (addr & LOCALBUS_MASK));
++}
++EXPORT_SYMBOL(localbus_map);
++
++void localbus_unmap(void __iomem *addr)
++{
++}
++EXPORT_SYMBOL(localbus_unmap);
+diff -puNrb linux-4.14.212/arch/powerpc/sysdev/rb_pci.c linux-4.14.212b/arch/powerpc/sysdev/rb_pci.c
+--- linux-4.14.212/arch/powerpc/sysdev/rb_pci.c	1970-01-01 00:00:00.000000000 +0000
++++ linux-4.14.212b/arch/powerpc/sysdev/rb_pci.c	2021-01-13 01:26:46.138258011 +0000
+@@ -0,0 +1,70 @@
++#include <linux/module.h>
++#include <linux/pci.h>
++#include <sysdev/fsl_pci.h>
++
++#ifdef CONFIG_PCI
++static int rb_exclude_device(struct pci_controller *hose,
++				 u_char bus, u_char devfn)
++{
++	return (bus == 0 && PCI_SLOT(devfn) == 0)
++	    ? PCIBIOS_SUCCESSFUL // PCIBIOS_DEVICE_NOT_FOUND
++	    : PCIBIOS_SUCCESSFUL;
++}
++#endif /* CONFIG_PCI */
++
++void __init rb_init_pci(void)
++{
++	ppc_md.pci_exclude_device = rb_exclude_device;
++}
++
++static void __init rb_secondary_bridge_fixup(struct pci_dev *dev) {
++	/* enable i/o space & memory space and bus master control */
++	pci_write_config_word(dev, PCI_COMMAND, 7);
++
++	/* disable prefetched memory range */
++	pci_write_config_word(dev, PCI_PREF_MEMORY_LIMIT, 0);
++	pci_write_config_word(dev, PCI_PREF_MEMORY_BASE, 0x10);
++
++	pci_write_config_word(dev, PCI_BASE_ADDRESS_0, 0);
++	pci_write_config_word(dev, PCI_BASE_ADDRESS_1, 0);
++
++	pci_write_config_byte(dev, PCI_CACHE_LINE_SIZE, 8);
++
++	pci_write_config_byte(dev, 0xc0, 1);
++}
++
++DECLARE_PCI_FIXUP_HEADER(0x3388, 0x0021, rb_secondary_bridge_fixup);
++
++static void fixup_pci(struct pci_dev *dev)
++{
++	if ((dev->class >> 8) == PCI_CLASS_BRIDGE_PCI) {
++		/* let the kernel itself set right memory windows */
++		pci_write_config_word(dev, PCI_MEMORY_BASE, 0);
++		pci_write_config_word(dev, PCI_MEMORY_LIMIT, 0);
++		pci_write_config_word(dev, PCI_PREF_MEMORY_BASE, 0);
++		pci_write_config_word(dev, PCI_PREF_MEMORY_LIMIT, 0);
++		pci_write_config_byte(dev, PCI_IO_BASE, 0);
++		pci_write_config_byte(dev, PCI_IO_LIMIT, 4 << 4);
++
++		pci_write_config_byte(
++		    dev, PCI_COMMAND,
++		    PCI_COMMAND_MASTER | PCI_COMMAND_MEMORY | PCI_COMMAND_IO);
++		pci_write_config_byte(dev, PCI_CACHE_LINE_SIZE, 8);
++	} else if (dev->vendor == 0x1957 &&
++		   (dev->device == 0x32 || dev->device == 0x33)) {
++		unsigned short val;
++		pci_read_config_word(dev, 0x44, &val);
++		pci_write_config_word(dev, 0x44, val | (1 << 10));
++		pci_write_config_byte(dev, PCI_LATENCY_TIMER, 0x00);
++	} else {
++		pci_write_config_byte(dev, PCI_LATENCY_TIMER, 0x40);
++	}
++}
++
++static void fixup_rb604(struct pci_dev *dev)
++{
++	pci_write_config_byte(dev, 0xC0, 0x01);
++}
++
++DECLARE_PCI_FIXUP_HEADER(PCI_ANY_ID, PCI_ANY_ID, fixup_pci)
++DECLARE_PCI_FIXUP_HEADER(0x3388, 0x0021, fixup_rb604)
